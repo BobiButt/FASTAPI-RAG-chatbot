@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<!--
+  index.html
+  Dark-themed chat UI for the RAG chatbot.
+  Features:
+    - Upload PDF/DOCX/TXT
+    - Chat with documents
+    - Reset database button
+    - Live status showing how many documents are loaded
+    - Markdown rendering for bot replies (bold, lists, headings)
+-->
+
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RAG Chatbot</title>
+
+  <style>
+    /* -------------- Global styles -------------- */
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+
+    /* -------------- Chat container -------------- */
+    .chat-container {
+      width: 100%;
+      max-width: 720px;
+      height: 90vh;
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 16px;
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* -------------- Header -------------- */
+    .chat-header {
+      padding: 14px 20px;
+      background: #312e81;
+      color: white;
+      font-weight: 600;
+      font-size: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .chat-header .title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .reset-btn {
+      background: #ef4444;
+      color: white;
+      border: none;
+      padding: 6px 12px;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+
+    .reset-btn:hover { background: #dc2626; }
+    .reset-btn:disabled { background: #7f1d1d; cursor: not-allowed; }
+
+    /* -------------- Status indicator -------------- */
+    .status-bar {
+      padding: 8px 20px;
+      background: #0f172a;
+      border-bottom: 1px solid #334155;
+      font-size: 12px;
+      color: #94a3b8;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .status-dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #ef4444;
+    }
+
+    .status-dot.ok { background: #22c55e; }
+
+    /* -------------- Upload bar -------------- */
+    .upload-bar {
+      padding: 12px 20px;
+      background: #1e293b;
+      border-bottom: 1px solid #334155;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 14px;
+    }
+
+    .upload-bar input[type="file"] {
+      flex: 1;
+      font-size: 13px;
+      color: #cbd5e1;
+    }
+
+    .upload-bar input[type="file"]::file-selector-button {
+      background: #334155;
+      color: #e2e8f0;
+      border: none;
+      padding: 6px 10px;
+      border-radius: 6px;
+      margin-right: 10px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+
+    .upload-bar button {
+      background: #4f46e5;
+      color: white;
+      border: none;
+      padding: 8px 14px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-weight: 500;
+      font-size: 13px;
+    }
+
+    .upload-bar button:hover { background: #4338ca; }
+    .upload-bar button:disabled { background: #3730a3; cursor: not-allowed; }
+
+    /* -------------- Messages area -------------- */
+    .messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .messages::-webkit-scrollbar { width: 8px; }
+    .messages::-webkit-scrollbar-track { background: #0f172a; }
+    .messages::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+
+    .message {
+      max-width: 80%;
+      padding: 12px 16px;
+      border-radius: 12px;
+      line-height: 1.6;
+      font-size: 14px;
+      word-wrap: break-word;
+    }
+
+    .message.user {
+      align-self: flex-end;
+      background: #4f46e5;
+      color: white;
+      border-bottom-right-radius: 4px;
+      white-space: pre-wrap;      /* Preserve line breaks in user messages */
+    }
+
+    .message.bot {
+      align-self: flex-start;
+      background: #334155;
+      color: #e2e8f0;
+      border-bottom-left-radius: 4px;
+    }
+
+    /* -------------- Markdown inside bot messages -------------- */
+    .message.bot p {
+      margin: 0 0 8px 0;          /* Space between paragraphs */
+    }
+    .message.bot p:last-child {
+      margin-bottom: 0;           /* No margin on last paragraph */
+    }
+
+    .message.bot strong {
+      color: #a5b4fc;             /* Highlight bold terms in indigo */
+      font-weight: 700;           /* Make bold actually bold */
+    }
+
+    .message.bot em {
+      color: #cbd5e1;             /* Slightly brighter italics */
+      font-style: italic;
+    }
+
+    .message.bot ul,
+    .message.bot ol {
+      margin: 8px 0 8px 20px;     /* Indent lists */
+      padding-left: 4px;
+    }
+
+    .message.bot li {
+      margin-bottom: 4px;         /* Space between list items */
+      line-height: 1.5;
+    }
+
+    .message.bot h1,
+    .message.bot h2,
+    .message.bot h3 {
+      color: #e2e8f0;
+      margin: 10px 0 6px 0;
+      font-weight: 700;
+    }
+    .message.bot h1 { font-size: 17px; }
+    .message.bot h2 { font-size: 16px; }
+    .message.bot h3 { font-size: 15px; }
+
+    .message.bot code {
+      background: #0f172a;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-family: "Fira Code", Consolas, monospace;
+      font-size: 13px;
+      color: #fbbf24;
+    }
+
+    .message.system {
+      align-self: center;
+      background: #422006;
+      color: #fbbf24;
+      font-size: 12px;
+      font-style: italic;
+      border: 1px solid #78350f;
+    }
+
+    /* -------------- Input area -------------- */
+    .input-bar {
+      display: flex;
+      gap: 8px;
+      padding: 12px 16px;
+      border-top: 1px solid #334155;
+      background: #1e293b;
+    }
+
+    .input-bar input[type="text"] {
+      flex: 1;
+      padding: 10px 14px;
+      background: #0f172a;
+      color: #e2e8f0;
+      border: 1px solid #334155;
+      border-radius: 10px;
+      font-size: 14px;
+      outline: none;
+    }
+
+    .input-bar input[type="text"]::placeholder { color: #64748b; }
+    .input-bar input[type="text"]:focus { border-color: #4f46e5; }
+
+    .input-bar button {
+      background: #4f46e5;
+      color: white;
+      border: none;
+      padding: 10px 18px;
+      border-radius: 10px;
+      cursor: pointer;
+      font-weight: 500;
+    }
+
+    .input-bar button:hover { background: #4338ca; }
+    .input-bar button:disabled { background: #312e81; cursor: not-allowed; }
+
+    /* -------------- Typing indicator -------------- */
+    .typing {
+      font-style: italic;
+      color: #94a3b8;
+      font-size: 13px;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="chat-container">
+
+    <!-- Header (with reset button) -->
+    <div class="chat-header">
+      <div class="title">📄 RAG Chatbot</div>
+      <button class="reset-btn" id="resetBtn" onclick="resetDatabase()">
+        Reset DB
+      </button>
+    </div>
+
+    <!-- Status indicator -->
+    <div class="status-bar" id="statusBar">
+      <span class="status-dot" id="statusDot"></span>
+      <span id="statusText">Checking database...</span>
+    </div>
+
+    <!-- Upload section -->
+    <div class="upload-bar">
+      <input type="file" id="fileInput" accept=".pdf,.docx,.txt" />
+      <button id="uploadBtn" onclick="uploadFile()">Upload</button>
+    </div>
+
+    <!-- Messages area -->
+    <div class="messages" id="messages">
+      <div class="message bot">
+        Hi! Upload a PDF, DOCX, or TXT file, then ask me anything about it.
+      </div>
+    </div>
+
+    <!-- Input section -->
+    <div class="input-bar">
+      <input
+        type="text"
+        id="questionInput"
+        placeholder="Ask a question about your document..."
+        onkeydown="if(event.key === 'Enter') sendQuestion()"
+      />
+      <button id="sendBtn" onclick="sendQuestion()">Send</button>
+    </div>
+
+  </div>
+
+  <script>
+    // -----------------------------------
+    // CONFIG
+    // -----------------------------------
+    const API_BASE = "";
+
+    // -----------------------------------
+    // DOM REFERENCES
+    // -----------------------------------
+    const messagesEl    = document.getElementById("messages");
+    const fileInput     = document.getElementById("fileInput");
+    const questionInput = document.getElementById("questionInput");
+    const sendBtn       = document.getElementById("sendBtn");
+    const uploadBtn     = document.getElementById("uploadBtn");
+    const resetBtn      = document.getElementById("resetBtn");
+    const statusDot     = document.getElementById("statusDot");
+    const statusText    = document.getElementById("statusText");
+
+    // -----------------------------------
+    // MARKDOWN RENDERER (minimal)
+    // -----------------------------------
+    // Converts a subset of markdown to HTML so bot messages look nice.
+    // Supports: **bold**, *italic*, `code`, bullet lists (-, *), headings (#, ##, ###),
+    // and double-newline paragraph breaks.
+    // NOTE: We escape HTML first to prevent injection, then apply formatting.
+    function renderMarkdown(text) {
+      // 1. Escape HTML characters so raw HTML in the model output can't run.
+      let html = text
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+
+      // 2. Bold: **text**  ->  <strong>text</strong>
+      html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+
+      // 3. Italic: *text*  ->  <em>text</em>
+      //    (only matches single asterisks not part of bold)
+      html = html.replace(/(^|[^*])\*([^*]+?)\*(?!\*)/g, "$1<em>$2</em>");
+
+      // 4. Inline code: `text`  ->  <code>text</code>
+      html = html.replace(/`([^`]+?)`/g, "<code>$1</code>");
+
+      // 5. Split into lines to handle lists + headings
+      const lines = html.split("\n");
+      const out = [];        // Final HTML lines
+      let inList = false;    // Are we inside a <ul> right now?
+
+      for (let line of lines) {
+        const trimmed = line.trim();
+
+        // Bullet list item: starts with "- " or "* "
+        if (/^[-*]\s+/.test(trimmed)) {
+          if (!inList) {
+            out.push("<ul>");    // Open a list if not already open
+            inList = true;
+          }
+          // Add the item without the bullet marker
+          out.push(`<li>${trimmed.replace(/^[-*]\s+/, "")}</li>`);
+          continue;
+        }
+
+        // If we were in a list and this line isn't a list item, close it
+        if (inList) {
+          out.push("</ul>");
+          inList = false;
+        }
+
+        // Headings: #, ##, ###
+        if (/^###\s+/.test(trimmed)) {
+          out.push(`<h3>${trimmed.replace(/^###\s+/, "")}</h3>`);
+        } else if (/^##\s+/.test(trimmed)) {
+          out.push(`<h2>${trimmed.replace(/^##\s+/, "")}</h2>`);
+        } else if (/^#\s+/.test(trimmed)) {
+          out.push(`<h1>${trimmed.replace(/^#\s+/, "")}</h1>`);
+        } else if (trimmed === "") {
+          // Blank line -> paragraph break (we'll add <br> at the end)
+          out.push("");
+        } else {
+          // Regular paragraph line
+          out.push(`<p>${trimmed}</p>`);
+        }
+      }
+
+      // Close the list if we ended while still inside one
+      if (inList) out.push("</ul>");
+
+      return out.join("\n");
+    }
+
+    // -----------------------------------
+    // HELPER: Add a message bubble
+    // -----------------------------------
+    // role: "user" | "bot" | "system" | "typing"
+    function addMessage(text, role) {
+      const div = document.createElement("div");
+      div.classList.add("message", role);
+
+      // Bot messages get markdown rendering; others stay plain text
+      if (role === "bot") {
+        div.innerHTML = renderMarkdown(text);
+      } else {
+        div.textContent = text;
+      }
+
+      messagesEl.appendChild(div);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+      return div;
+    }
+
+    // -----------------------------------
+    // HELPER: Refresh DB status indicator
+    // -----------------------------------
+    async function refreshStatus() {
+      try {
+        const res = await fetch(`${API_BASE}/status`);
+        const data = await res.json();
+
+        if (data.empty) {
+          statusDot.classList.remove("ok");
+          statusText.textContent = "No documents loaded — upload a file to begin.";
+        } else {
+          statusDot.classList.add("ok");
+          const srcList = data.sources.join(", ");
+          statusText.textContent = `${data.chunks} chunks loaded from: ${srcList}`;
+        }
+      } catch (err) {
+        statusText.textContent = "Could not reach server.";
+      }
+    }
+
+    // -----------------------------------
+    // HANDLER: Upload file
+    // -----------------------------------
+    async function uploadFile() {
+      const file = fileInput.files[0];
+      if (!file) {
+        addMessage("Please choose a file first.", "system");
+        return;
+      }
+
+      uploadBtn.disabled = true;
+      uploadBtn.textContent = "Uploading...";
+
+      const formData = new FormData();
+      formData.append("file", file);
+
+      try {
+        const res = await fetch(`${API_BASE}/upload`, {
+          method: "POST",
+          body: formData,
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+          addMessage(`Upload failed: ${data.detail || "unknown error"}`, "system");
+        } else {
+          addMessage(`✅ Uploaded "${file.name}" (${data.chunks_stored} chunks stored)`, "system");
+          fileInput.value = "";
+          await refreshStatus();
+        }
+      } catch (err) {
+        addMessage(`Upload error: ${err.message}`, "system");
+      } finally {
+        uploadBtn.disabled = false;
+        uploadBtn.textContent = "Upload";
+      }
+    }
+
+    // -----------------------------------
+    // HANDLER: Send a question
+    // -----------------------------------
+    async function sendQuestion() {
+      const question = questionInput.value.trim();
+      if (!question) return;
+
+      addMessage(question, "user");
+      questionInput.value = "";
+      sendBtn.disabled = true;
+
+      const thinkingEl = addMessage("Thinking...", "typing");
+
+      try {
+        const res = await fetch(`${API_BASE}/chat`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ question }),
+        });
+        const data = await res.json();
+
+        thinkingEl.remove();
+
+        if (!res.ok) {
+          addMessage(`Error: ${data.detail || "unknown error"}`, "system");
+        } else {
+          addMessage(data.answer, "bot");
+        }
+      } catch (err) {
+        thinkingEl.remove();
+        addMessage(`Error: ${err.message}`, "system");
+      } finally {
+        sendBtn.disabled = false;
+        questionInput.focus();
+      }
+    }
+
+    // -----------------------------------
+    // HANDLER: Reset the database
+    // -----------------------------------
+    async function resetDatabase() {
+      const confirmed = confirm(
+        "This will delete ALL uploaded documents. Continue?"
+      );
+      if (!confirmed) return;
+
+      resetBtn.disabled = true;
+      resetBtn.textContent = "Resetting...";
+
+      try {
+        const res = await fetch(`${API_BASE}/reset`, { method: "DELETE" });
+        const data = await res.json();
+
+        if (!res.ok) {
+          addMessage(`Reset failed: ${data.detail || "unknown error"}`, "system");
+        } else {
+          addMessage(`🗑️ ${data.message}`, "system");
+          await refreshStatus();
+        }
+      } catch (err) {
+        addMessage(`Reset error: ${err.message}`, "system");
+      } finally {
+        resetBtn.disabled = false;
+        resetBtn.textContent = "Reset DB";
+      }
+    }
+
+    // -----------------------------------
+    // INIT
+    // -----------------------------------
+    refreshStatus();
+  </script>
+</body>
+</html>
