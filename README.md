@@ -193,8 +193,7 @@ rag-chatbot/
 │   ├── .gitignore           # Ignored files configuration
 │   ├── vector_db/           # Local ChromaDB persistent storage directory
 │   └── data/                # Document storage directory
-└── frontend/
-    └── index.html           # Unified chat interface layout
+    └── index.html           # Unified chat interface layout           
 ```
 
 ## 🐛 Troubleshooting Guide
