@@ -28,7 +28,7 @@ FALLBACK_MODELS = [
     "gemini-3.6-flash",                              # fallback #2
     "gemini-3.5-flash",                              # fallback #3
     "gemini-flash-latest",                           # fallback #4 (auto-latest)
-    "gemini-2.5-flash",                              # fallback #5 (older)
+                                 # fallback #5 (older)
 ]
 
 # The system instruction tells the model how to behave

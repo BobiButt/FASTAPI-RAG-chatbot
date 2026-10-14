@@ -1,15 +1,25 @@
 # main.py
 # The FastAPI entry point - defines our API endpoints.
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from database import collection
 from fastapi.responses import FileResponse        # For returning index.html
+from fastapi.responses import Response            # For returning WAV audio
 
 # Import our custom modules
 from ingest import extract_text, chunk_text, store_chunks
 from rag import generate_answer
+from speech import transcribe_audio, warmup
+from tts import synthesize_wav, warmup_tts
+
+# Load the offline speech-to-text model in the background so the first
+# /transcribe request is fast (the model downloads only on first ever run).
+warmup()
+
+# Load the offline text-to-speech voice in the background as well.
+warmup_tts()
 
 # Create the FastAPI app
 app = FastAPI(title="RAG Chatbot")
@@ -157,3 +167,58 @@ def database_status():
         "sources": list(sources),            # e.g. ["cv.pdf", "notes.txt"]
         "empty": count == 0
     }
+
+
+# ---------------------------
+# ROUTE 7: Transcribe speech (offline STT)
+# ---------------------------
+@app.post("/transcribe")
+async def transcribe_speech(file: UploadFile = File(...)):
+    """
+    Accept a short audio clip recorded in the browser (WAV),
+    transcribe it locally with faster-whisper, and return the text.
+    This runs fully offline - no cloud speech services involved.
+    """
+    try:
+        audio_bytes = await file.read()
+        if not audio_bytes:
+            raise HTTPException(status_code=400, detail="Empty audio file.")
+
+        text = transcribe_audio(audio_bytes)
+        return {"text": text}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Transcription failed: {str(e)}"
+        )
+
+
+# ---------------------------
+# ROUTE 8: Text-to-speech (offline TTS)
+# ---------------------------
+@app.post("/speak")
+async def speak_text(payload: dict = Body(...)):
+    """
+    Render text to speech locally with a Piper neural voice (Ryan, a natural
+    American male voice) and return WAV audio. Used by the frontend speaker
+    button and auto-speaker mode; fully offline, with espeak-ng as an
+    emergency fallback.
+    """
+    try:
+        text = (payload.get("text") or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="No text provided.")
+
+        audio = synthesize_wav(text)
+        return Response(content=audio, media_type="audio/wav")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Speech synthesis failed: {str(e)}"
+        )

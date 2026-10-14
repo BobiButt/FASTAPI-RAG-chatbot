@@ -1,2 +1,3 @@
 cd ~/Desktop/"Python projects hccda/fastapi RAG chatbot scoped answer/rag-chatbot/backend"
 source venv/bin/activate
+uvicorn main:app --reload

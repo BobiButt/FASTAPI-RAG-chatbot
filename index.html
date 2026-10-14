@@ -8,6 +8,11 @@
     - Reset database button
     - Live status showing how many documents are loaded
     - Markdown rendering for bot replies (bold, lists, headings)
+    - Speech-to-text input via mic button (offline, transcribed on the backend)
+    - Optional auto-send mode for voice input
+    - Speaker button on every bot reply + optional auto-speaker mode
+      (browser English voice; falls back to the offline neural server
+      voice - Piper Ryan - when the browser has no usable English voice)
 -->
 
 <html lang="en">
@@ -284,6 +289,89 @@
       color: #94a3b8;
       font-size: 13px;
     }
+
+    /* -------------- Voice input (speech-to-text) -------------- */
+    .voice-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 8px 16px;
+      border-top: 1px solid #334155;
+      background: #1e293b;
+      font-size: 12px;
+    }
+
+    .auto-send-btn {
+      background: #334155;
+      color: #cbd5e1;
+      border: none;
+      padding: 6px 12px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+
+    .auto-send-btn:hover { background: #475569; }
+    .auto-send-btn.active { background: #16a34a; color: white; }
+    .auto-send-btn.active:hover { background: #15803d; }
+
+    .voice-status { color: #94a3b8; }
+
+    .mic-btn {
+      background: #4f46e5;
+      color: white;
+      border: none;
+      width: 42px;
+      height: 42px;
+      border-radius: 10px;
+      cursor: pointer;
+      font-size: 18px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      padding: 0;
+    }
+
+    .mic-btn:hover { background: #4338ca; }
+    .mic-btn:disabled { background: #312e81; cursor: not-allowed; }
+
+    .mic-btn.listening {
+      background: #ef4444;
+      animation: mic-pulse 1.2s ease-in-out infinite;
+    }
+
+    .mic-btn.listening:hover { background: #dc2626; }
+
+    @keyframes mic-pulse {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.5); }
+      50%      { box-shadow: 0 0 0 8px rgba(239, 68, 68, 0); }
+    }
+
+    /* -------------- Speaker button (read reply aloud) -------------- */
+    .speak-btn {
+      display: block;
+      margin: 8px 0 0 auto;
+      background: transparent;
+      color: #94a3b8;
+      border: 1px solid #475569;
+      padding: 3px 10px;
+      border-radius: 8px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+
+    .speak-btn:hover { background: #475569; color: #e2e8f0; }
+
+    .speak-btn.speaking {
+      background: #ef4444;
+      border-color: #ef4444;
+      color: white;
+    }
+
+    .speak-btn.speaking:hover { background: #dc2626; }
   </style>
 </head>
 
@@ -317,6 +405,27 @@
       </div>
     </div>
 
+    <!-- Voice controls (speech-to-text) -->
+    <div class="voice-bar">
+      <button
+        id="autoSendBtn"
+        class="auto-send-btn"
+        onclick="toggleAutoSend()"
+        title="When ON, the message is sent automatically right after you stop the mic"
+      >
+        ⚡ Auto-send: OFF
+      </button>
+      <button
+        id="autoSpeakBtn"
+        class="auto-send-btn"
+        onclick="toggleAutoSpeak()"
+        title="When ON, every bot reply is read aloud automatically"
+      >
+        🔊 Auto-speak: OFF
+      </button>
+      <span class="voice-status" id="voiceStatus">🎤 Click the mic to speak</span>
+    </div>
+
     <!-- Input section -->
     <div class="input-bar">
       <input
@@ -325,6 +434,12 @@
         placeholder="Ask a question about your document..."
         onkeydown="if(event.key === 'Enter') sendQuestion()"
       />
+      <button
+        id="micBtn"
+        class="mic-btn"
+        onclick="toggleListening()"
+        title="Start voice input"
+      >🎤</button>
       <button id="sendBtn" onclick="sendQuestion()">Send</button>
     </div>
 
@@ -347,6 +462,10 @@
     const resetBtn      = document.getElementById("resetBtn");
     const statusDot     = document.getElementById("statusDot");
     const statusText    = document.getElementById("statusText");
+    const micBtn        = document.getElementById("micBtn");
+    const autoSendBtn   = document.getElementById("autoSendBtn");
+    const autoSpeakBtn  = document.getElementById("autoSpeakBtn");
+    const voiceStatus   = document.getElementById("voiceStatus");
 
     // -----------------------------------
     // MARKDOWN RENDERER (minimal)
@@ -430,6 +549,18 @@
       // Bot messages get markdown rendering; others stay plain text
       if (role === "bot") {
         div.innerHTML = renderMarkdown(text);
+
+        // Speaker button: read this reply aloud (browser TTS with an
+        // offline server voice as automatic fallback).
+        const speakBtn = document.createElement("button");
+        speakBtn.className = "speak-btn";
+        speakBtn.title = "Read this reply aloud";
+        speakBtn.textContent = "🔊";
+        speakBtn.onclick = () => toggleSpeak(text, speakBtn);
+        div.appendChild(speakBtn);
+
+        // Auto-speaker mode: read every new bot reply aloud automatically.
+        if (autoSpeak) toggleSpeak(text, speakBtn);
       } else {
         div.textContent = text;
       }
@@ -563,6 +694,451 @@
         resetBtn.disabled = false;
         resetBtn.textContent = "Reset DB";
       }
+    }
+
+    // -----------------------------------
+    // SPEECH-TO-TEXT (offline, via backend)
+    // -----------------------------------
+    // The browser only RECORDS the mic (Web Audio API) and uploads a WAV
+    // file to POST /transcribe. The backend transcribes it locally with a
+    // Whisper model - no cloud speech service, works fully offline.
+    // Whether auto-send mode is enabled (send right after mic stops).
+    let autoSend = false;
+
+    // Whether auto-speaker mode is enabled (read bot replies aloud).
+    let autoSpeak = false;
+
+    // Whether the mic is currently recording.
+    let isListening = false;
+
+    // Whether a recording is being transcribed by the server.
+    let isTranscribing = false;
+
+    // Text already in the input box when recording started.
+    let baseText = "";
+
+    // Web Audio pieces used while recording.
+    let audioContext = null;
+    let mediaStream = null;
+    let scriptNode = null;
+    let recordedChunks = [];   // Float32 audio blocks captured from the mic
+
+    // Sample rate expected by the transcription model.
+    const TARGET_SAMPLE_RATE = 16000;
+
+    // Downsample Float32 audio to the target rate (linear interpolation).
+    function resample(samples, fromRate, toRate) {
+      if (fromRate === toRate) return samples;
+      const ratio = fromRate / toRate;
+      const newLength = Math.floor(samples.length / ratio);
+      const out = new Float32Array(newLength);
+      for (let i = 0; i < newLength; i++) {
+        const pos = i * ratio;
+        const left = Math.floor(pos);
+        const right = Math.min(left + 1, samples.length - 1);
+        const frac = pos - left;
+        out[i] = samples[left] * (1 - frac) + samples[right] * frac;
+      }
+      return out;
+    }
+
+    // Reset the mic button/status back to the idle state.
+    function resetMicUI() {
+      micBtn.classList.remove("listening");
+      micBtn.textContent = "🎤";
+      micBtn.title = "Start voice input";
+      micBtn.disabled = false;
+      voiceStatus.textContent = "🎤 Click the mic to speak";
+    }
+
+    // Encode Float32 samples as a 16-bit mono WAV blob.
+    function encodeWAV(samples, sampleRate) {
+      const buffer = new ArrayBuffer(44 + samples.length * 2);
+      const view = new DataView(buffer);
+
+      const writeString = (offset, str) => {
+        for (let i = 0; i < str.length; i++) {
+          view.setUint8(offset + i, str.charCodeAt(i));
+        }
+      };
+
+      writeString(0, "RIFF");
+      view.setUint32(4, 36 + samples.length * 2, true);
+      writeString(8, "WAVE");
+      writeString(12, "fmt ");
+      view.setUint32(16, 16, true);             // fmt chunk size
+      view.setUint16(20, 1, true);              // PCM format
+      view.setUint16(22, 1, true);              // mono
+      view.setUint32(24, sampleRate, true);     // sample rate
+      view.setUint32(28, sampleRate * 2, true); // byte rate
+      view.setUint16(32, 2, true);              // block align
+      view.setUint16(34, 16, true);             // bits per sample
+      writeString(36, "data");
+      view.setUint32(40, samples.length * 2, true);
+
+      let offset = 44;
+      for (let i = 0; i < samples.length; i++, offset += 2) {
+        const s = Math.max(-1, Math.min(1, samples[i]));
+        view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+      }
+
+      return new Blob([buffer], { type: "audio/wav" });
+    }
+
+    // Start capturing microphone audio.
+    async function startListening() {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        addMessage("Microphone capture is not supported in this browser.", "system");
+        return;
+      }
+
+      // Ask for mic permission (button stays disabled until granted).
+      micBtn.disabled = true;
+      try {
+        mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      } catch (err) {
+        micBtn.disabled = false;
+        addMessage(
+          "Microphone access denied. Allow the mic permission and try again.",
+          "system"
+        );
+        return;
+      }
+      micBtn.disabled = false;
+
+      isListening = true;
+      baseText = questionInput.value.trim();
+      recordedChunks = [];
+
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      audioContext = new AudioCtx({ sampleRate: TARGET_SAMPLE_RATE });
+      const source = audioContext.createMediaStreamSource(mediaStream);
+
+      // Capture raw PCM samples. The output side stays silent, so the mic
+      // is never played back through the speakers (no feedback loop).
+      scriptNode = audioContext.createScriptProcessor(4096, 1, 1);
+      scriptNode.onaudioprocess = (event) => {
+        recordedChunks.push(
+          new Float32Array(event.inputBuffer.getChannelData(0))
+        );
+      };
+      source.connect(scriptNode);
+      scriptNode.connect(audioContext.destination);
+
+      micBtn.classList.add("listening");
+      micBtn.textContent = "⏹";
+      micBtn.title = "Stop voice input";
+      voiceStatus.textContent = "🔴 Recording... speak, then press ⏹ to stop";
+    }
+
+    // Stop recording, upload the audio, and handle the transcribed text.
+    async function stopListening() {
+      if (!isListening) return;
+      isListening = false;
+      micBtn.disabled = true;
+      voiceStatus.textContent = "🔄 Transcribing speech locally...";
+
+      // Remember the real capture rate, then tear the audio pipeline down.
+      const sourceRate = audioContext ? audioContext.sampleRate : TARGET_SAMPLE_RATE;
+
+      if (scriptNode) {
+        scriptNode.onaudioprocess = null;
+        scriptNode.disconnect();
+        scriptNode = null;
+      }
+      if (mediaStream) {
+        mediaStream.getTracks().forEach((track) => track.stop());
+        mediaStream = null;
+      }
+      if (audioContext) {
+        const ctx = audioContext;
+        audioContext = null;
+        try { await ctx.close(); } catch (err) { /* ignore */ }
+      }
+
+      // Merge all captured blocks into one buffer and normalize the rate.
+      let total = 0;
+      for (const block of recordedChunks) total += block.length;
+      const merged = new Float32Array(total);
+      let offset = 0;
+      for (const block of recordedChunks) {
+        merged.set(block, offset);
+        offset += block.length;
+      }
+      recordedChunks = [];
+
+      const samples = resample(merged, sourceRate, TARGET_SAMPLE_RATE);
+
+      // Ignore very short accidental taps on the mic button.
+      if (samples.length < TARGET_SAMPLE_RATE * 0.3) {
+        resetMicUI();
+        addMessage("Recording was too short - no speech captured.", "system");
+        return;
+      }
+
+      // Send the WAV to the local transcription endpoint.
+      const wavBlob = encodeWAV(samples, TARGET_SAMPLE_RATE);
+      const formData = new FormData();
+      formData.append("file", wavBlob, "speech.wav");
+
+      isTranscribing = true;
+      try {
+        const res = await fetch(`${API_BASE}/transcribe`, {
+          method: "POST",
+          body: formData,
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+          addMessage(`Transcription failed: ${data.detail || "unknown error"}`, "system");
+        } else {
+          const spoken = (data.text || "").trim();
+          if (!spoken) {
+            addMessage("No speech was detected in the recording.", "system");
+          }
+
+          // Write the transcribed text into the input box.
+          questionInput.value = [baseText, spoken]
+            .map((part) => part.trim())
+            .filter(Boolean)
+            .join(" ");
+
+          // Auto-send only when new speech was actually captured.
+          if (autoSend && spoken) {
+            sendQuestion();
+          } else if (spoken) {
+            questionInput.focus();
+          }
+        }
+      } catch (err) {
+        addMessage(`Transcription error: ${err.message}`, "system");
+      } finally {
+        isTranscribing = false;
+        baseText = "";
+        resetMicUI();
+      }
+    }
+
+    // Toggle between recording (mic) and stop states.
+    function toggleListening() {
+      if (isTranscribing) return;   // busy - ignore clicks while transcribing
+      if (isListening) {
+        stopListening();
+      } else {
+        startListening();
+      }
+    }
+
+    // Toggle auto-send mode on/off.
+    function toggleAutoSend() {
+      autoSend = !autoSend;
+      autoSendBtn.classList.toggle("active", autoSend);
+      autoSendBtn.textContent = autoSend
+        ? "⚡ Auto-send: ON"
+        : "⚡ Auto-send: OFF";
+    }
+
+    // Toggle auto-speaker mode on/off (read every new bot reply aloud).
+    function toggleAutoSpeak() {
+      autoSpeak = !autoSpeak;
+      autoSpeakBtn.classList.toggle("active", autoSpeak);
+      autoSpeakBtn.textContent = autoSpeak
+        ? "🔊 Auto-speak: ON"
+        : "🔊 Auto-speak: OFF";
+      // Turning it off also stops whatever is being read right now.
+      if (!autoSpeak) stopSpeaking();
+    }
+
+    // -----------------------------------
+    // TEXT-TO-SPEECH (read bot replies aloud)
+    // -----------------------------------
+    const synth = window.speechSynthesis || null;
+
+    // The speaker button that is currently playing (if any).
+    let speakingBtn = null;
+
+    // Audio element playing the backend-fallback voice (if any).
+    let currentAudio = null;
+
+    // Timer used to keep Chrome reading long replies (its long-text bug).
+    let synthResumeTimer = null;
+
+    // Only warn once when browser TTS is unavailable -> use server voice.
+    let warnedAboutFallback = false;
+
+    // Strip markdown symbols so the spoken text sounds natural.
+    function textForSpeech(markdown) {
+      return markdown
+        .replace(/```[\s\S]*?```/g, " ")              // fenced code blocks
+        .replace(/`([^`]+)`/g, "$1")                  // inline code
+        .replace(/\*\*([^*]+)\*\*/g, "$1")            // bold
+        .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")      // links -> label text
+        .replace(/^#{1,6}\s+/gm, "")                  // heading markers
+        .replace(/^\s*[-*+]\s+/gm, "")                // bullet markers
+        .replace(/^\s*\d+\.\s+/gm, "")                // numbered markers
+        .replace(/\s+/g, " ")
+        .trim();
+    }
+
+    // Find the best English browser voice, or null if there is none.
+    // Never returns a Chinese/other-language voice.
+    function bestEnglishVoice() {
+      if (!synth) return null;
+      const voices = synth.getVoices() || [];
+
+      // English voices only - explicitly exclude Chinese and others.
+      const english = voices.filter((v) => {
+        const lang = (v.lang || "").replace("_", "-");
+        const name = (v.name || "").toLowerCase();
+        const isEnglish = /^en(-|$)/i.test(lang);
+        const looksChinese =
+          /zh|china|chinese|mandarin|cantonese|taiwan/i.test(lang + " " + name);
+        return isEnglish && !looksChinese;
+      });
+      if (!english.length) return null;
+
+      // Prefer smoother, higher-quality voices when several are available.
+      const score = (v) => {
+        const name = (v.name || "").toLowerCase();
+        if (/natural|neural|premium|enhanced|siri/.test(name)) return 3;
+        if (/google|microsoft/.test(name)) return 2;
+        return 1;
+      };
+      const sorted = english.slice().sort((a, b) => {
+        const byScore = score(b) - score(a);
+        if (byScore !== 0) return byScore;
+        const usA = /^en-US$/i.test((a.lang || "").replace("_", "-")) ? 1 : 0;
+        const usB = /^en-US$/i.test((b.lang || "").replace("_", "-")) ? 1 : 0;
+        if (usB !== usA) return usB - usA;
+        return (b.localService ? 1 : 0) - (a.localService ? 1 : 0);
+      });
+      return sorted[0] || null;
+    }
+
+    // Mark a button as the one currently playing.
+    function markSpeaking(btn) {
+      speakingBtn = btn;
+      btn.textContent = "⏹";
+      btn.classList.add("speaking");
+    }
+
+    // Stop any current speech/audio and reset its button.
+    function stopSpeaking() {
+      if (synth) synth.cancel();
+      clearInterval(synthResumeTimer);
+      synthResumeTimer = null;
+      if (currentAudio) {
+        try { currentAudio.pause(); } catch (err) { /* ignore */ }
+        currentAudio = null;
+      }
+      if (speakingBtn) {
+        speakingBtn.textContent = "🔊";
+        speakingBtn.classList.remove("speaking");
+        speakingBtn = null;
+      }
+    }
+
+    // Fallback: ask the local server to render speech (espeak-ng) and play it.
+    async function speakViaServer(text, btn) {
+      clearInterval(synthResumeTimer);
+      synthResumeTimer = null;
+
+      if (!warnedAboutFallback) {
+        warnedAboutFallback = true;
+        addMessage(
+          "ℹ️ Browser voice unavailable - using the offline server voice.",
+          "system"
+        );
+      }
+
+      try {
+        const res = await fetch(`${API_BASE}/speak`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        });
+        if (!res.ok) {
+          const data = await res
+            .json()
+            .catch(() => ({ detail: "unknown error" }));
+          throw new Error(data.detail || "unknown error");
+        }
+
+        const blob = await res.blob();
+
+        // The user may have hit stop (or started another reply) while the
+        // server was rendering - don't start playing late.
+        if (speakingBtn !== btn) return;
+
+        const blobUrl = URL.createObjectURL(blob);
+        const audio = new Audio(blobUrl);
+        currentAudio = audio;
+
+        audio.onended = () => {
+          URL.revokeObjectURL(blobUrl);
+          if (speakingBtn === btn) stopSpeaking();
+        };
+        audio.onerror = () => {
+          URL.revokeObjectURL(blobUrl);
+          if (speakingBtn === btn) {
+            stopSpeaking();
+            addMessage("Could not play the server voice in this browser.", "system");
+          }
+        };
+
+        await audio.play();
+      } catch (err) {
+        if (speakingBtn === btn) stopSpeaking();
+        addMessage(`Text-to-speech failed: ${err.message}`, "system");
+      }
+    }
+
+    // Toggle: read this bot reply aloud, or stop it if it is already playing.
+    function toggleSpeak(text, btn) {
+      const plain = textForSpeech(text);
+      if (!plain) return;
+
+      const wasPlayingThis = speakingBtn === btn;
+      stopSpeaking();
+      if (wasPlayingThis) return;    // second click on same button = stop
+
+      markSpeaking(btn);
+
+      // Preferred: the browser's own TTS, but only with a proper English
+      // voice - otherwise go straight to the offline neural server voice.
+      const browserVoice = bestEnglishVoice();
+      if (synth && browserVoice) {
+        const utter = new SpeechSynthesisUtterance(plain);
+        utter.voice = browserVoice;
+        utter.lang = browserVoice.lang;
+
+        utter.onend = () => {
+          if (speakingBtn === btn) stopSpeaking();
+        };
+
+        // If the browser refuses to speak (audio driver error), fall back
+        // to the offline server voice instead of failing silently.
+        utter.onerror = (event) => {
+          console.warn("Browser TTS error:", event && event.error);
+          if (speakingBtn === btn) speakViaServer(plain, btn);
+        };
+
+        synth.speak(utter);
+
+        // Chrome pauses long utterances unless resume() is called periodically.
+        synthResumeTimer = setInterval(() => {
+          if (synth.speaking) synth.resume();
+        }, 9000);
+        return;
+      }
+
+      // No usable browser voice (or no TTS API at all) -> offline server voice.
+      speakViaServer(plain, btn);
+    }
+
+    if (synth) {
+      // Trigger async loading of the available system voices.
+      synth.getVoices();
     }
 
     // -----------------------------------
